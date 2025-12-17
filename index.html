@@ -3,46 +3,35 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PoGo Smart Scanner</title>
+    <title>PoGo Simple Scanner</title>
     <link rel="stylesheet" href="style.css">
     <script src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js'></script>
 </head>
 <body>
 
 <div class="container">
-    <h1>📸 Smart Scanner</h1>
+    <h1>🔎 Name & CP Scanner</h1>
     
     <label for="uploader" class="btn-upload">Tap to Upload Screenshot</label>
     <input type="file" id="uploader" accept="image/*">
     
-    <canvas id="processing-canvas"></canvas>
+    <canvas id="processing-canvas" style="display:none;"></canvas>
 
-    <div id="status">Waiting for image...</div>
+    <div id="status">Upload an image to start.</div>
     
-    <img id="preview-image" style="display:none;" />
+    <img id="preview-image" />
 
     <div class="results-grid">
         <div class="result-group">
-            <label>Pokémon Name</label>
-            <input type="text" id="p-name" placeholder="...">
+            <label>Pokémon Name (Guess)</label>
+            <input type="text" id="p-name" placeholder="..." readonly>
         </div>
         <div class="result-group">
             <label>CP</label>
-            <input type="number" id="p-cp" placeholder="0">
-        </div>
-        <div class="result-group">
-            <label>HP (Max)</label>
-            <input type="number" id="p-hp" placeholder="0">
-        </div>
-        <div class="result-group">
-            <label>Stardust Cost</label>
-            <input type="number" id="p-dust" placeholder="0">
-        </div>
-         <div class="result-group full-width">
-            <label>Detected Moves</label>
-            <input type="text" id="p-moves" placeholder="...">
+            <input type="number" id="p-cp" placeholder="0" readonly>
         </div>
     </div>
+    <p style="text-align: center; color: #999; font-size: 0.8em;">Results are guesses based on screen position.</p>
 </div>
 
 <script src="script.js"></script>
