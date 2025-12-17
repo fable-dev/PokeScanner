@@ -87,16 +87,23 @@ function isolateWhiteText(cvs) {
     ctx.putImageData(imgData, 0, 0);
 }
 
-// === OCR HELPERS ===
+// === IMPROVED CLEANER ===
 function cleanOCRNumbers(str) {
-    return str
-        .replace(/[lI|/!]/g, '1') 
-        .replace(/[O]/g, '0')     
-        .replace(/[S]/g, '5')     
-        .replace(/[Z]/g, '2')     
-        .replace(/[d]/g, '4')     
-        .replace(/[B]/g, '8')     
-        .replace(/[^0-9]/g, '');  
+    // 1. The "Sandwich" Fix:
+    // If a slash (/) or pipe (|) is stuck between two digits (e.g. "3/7"), 
+    // it's almost certainly a scratch/sparkle, NOT a number 1.
+    // We remove it entirely.
+    let cleaned = str.replace(/(\d)[\/\|\\](\d)/g, '$1$2');
+
+    // 2. Standard Fixes (remaining slashes become 1)
+    return cleaned
+        .replace(/[lI|/!]/g, '1') // l, I, pipe, slash -> 1
+        .replace(/[O]/g, '0')     // Capital O -> 0
+        .replace(/[S]/g, '5')     // S -> 5
+        .replace(/[Z]/g, '2')     // Z -> 2
+        .replace(/[d]/g, '4')     // d -> 4
+        .replace(/[B]/g, '8')     // B -> 8
+        .replace(/[^0-9]/g, '');  // Remove non-numbers
 }
 
 function parseData(data) {
@@ -110,7 +117,7 @@ function parseData(data) {
     let cpLineIndex = -1;
 
     // STRATEGY A: Strict Prefix Search
-    const strictRegex = /(?:CP|CR|CA|GP|0P|LP|P)[^0-9]{0,4}([0-9lIioOdS\/\-]{2,6})/i;
+    const strictRegex = /(?:CP|CR|CA|GP|0P|LP|P)[^0-9]{0,4}([0-9lIioOdS\/\-]{2,7})/i;
     
     for (let i = 1; i < lines.length; i++) {
         const lineText = lines[i].text.trim();
@@ -120,6 +127,8 @@ function parseData(data) {
         if (match) {
             const cleanNumber = cleanOCRNumbers(match[1]);
             const val = parseInt(cleanNumber);
+            
+            // CP range: 10 to 6500
             if (val > 10 && val < 6500) {
                 foundCP = cleanNumber;
                 cpLineIndex = i;
@@ -132,13 +141,18 @@ function parseData(data) {
     if (!foundCP) {
         console.log("⚠️ No CP prefix found. Trying fallback...");
         let maxVal = 0;
+
         for (let i = 1; i < Math.min(lines.length, 6); i++) {
             const lineText = lines[i].text;
-            const numbers = lineText.match(/[0-9lI|/SdB]{3,4}/g); 
+            
+            // UPDATE: We now capture up to 6 chars (was 4) to catch messy strings like "3/748"
+            const numbers = lineText.match(/[0-9lI|/SdB]{3,6}/g); 
+            
             if (numbers) {
                 numbers.forEach(num => {
                     const clean = cleanOCRNumbers(num);
                     const val = parseInt(clean);
+
                     if (val > maxVal && val < 6500) {
                         maxVal = val;
                         foundCP = clean;
@@ -149,16 +163,22 @@ function parseData(data) {
         }
     }
 
+    // SET CP
     if (foundCP) fieldCP.value = foundCP;
     else fieldCP.value = "Error";
 
-    // Name Logic
+    // NAME GUESSING
     if (cpLineIndex !== -1) {
         for(let offset = 1; offset <= 2; offset++) {
             const targetLine = lines[cpLineIndex + offset];
             if (targetLine) {
                 let candidate = targetLine.text.trim();
-                if (candidate.length > 2 && /[a-zA-Z]/.test(candidate) && !/[0-9]/.test(candidate) && !candidate.includes('/')) {
+                
+                if (candidate.length > 2 && 
+                    /[a-zA-Z]/.test(candidate) && 
+                    !/[0-9]/.test(candidate) &&
+                    !candidate.includes('/')
+                ) {
                     candidate = candidate.replace(/[^a-zA-Z\s\-]/g, '');
                     fieldName.value = candidate;
                     break;
