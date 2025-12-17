@@ -18,70 +18,60 @@ function handleUpload() {
     img.src = URL.createObjectURL(file);
 
     img.onload = () => {
-        // 1. Setup the canvas (But only for the top 35% of the image)
-        // This removes the bottom buttons/map which confuse the scanner
-        const cropHeight = img.height * 0.35; 
-        
-        canvas.width = img.width;
-        canvas.height = cropHeight;
-        
-        // Draw only the top slice
-        ctx.drawImage(img, 0, 0, img.width, cropHeight, 0, 0, img.width, cropHeight);
-        
-        // 2. Pre-process: Invert & Grayscale
-        // This makes white text (common in PoGo) turn black, which OCR prefers.
-        preprocessImage(canvas);
-
-        // Show the user exactly what the computer sees (Debug step)
-        previewImage.src = canvas.toDataURL();
+        // 1. Show the original image clearly
+        previewImage.src = img.src;
         previewImage.style.display = 'block';
 
-        status.innerText = "⏳ Scanning top section...";
+        // 2. Prepare canvas with FULL image (No cropping)
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx.drawImage(img, 0, 0);
+
+        // 3. Gentle Grayscale (Removes color noise, keeps text smooth)
+        convertToGrayscale(canvas);
+
+        status.innerText = "⏳ Scanning full image...";
         fieldName.value = '';
         fieldCP.value = '';
 
-        // 3. Run Tesseract
+        // 4. Run Tesseract
         Tesseract.recognize(
             canvas,
             'eng',
-            { logger: m => { if (m.status === 'recognizing text') status.innerText = `⏳ Scanning... ${Math.round(m.progress * 100)}%`; } }
+            { 
+                logger: m => { 
+                    if (m.status === 'recognizing text') {
+                        status.innerText = `⏳ Scanning... ${Math.round(m.progress * 100)}%`;
+                    }
+                } 
+            }
         ).then(({ data }) => {
             status.innerText = "✅ Scan Complete";
             parseData(data);
         }).catch(err => {
             status.innerText = "❌ Error: " + err.message;
+            console.error(err);
         });
     };
 }
 
-function preprocessImage(cvs) {
+function convertToGrayscale(cvs) {
     const imgData = ctx.getImageData(0, 0, cvs.width, cvs.height);
     const data = imgData.data;
 
     for (let i = 0; i < data.length; i += 4) {
-        // Get RGB values
         const r = data[i];
         const g = data[i + 1];
         const b = data[i + 2];
-
-        // 1. Grayscale standard formula
-        let gray = 0.299 * r + 0.587 * g + 0.114 * b;
-
-        // 2. Contrast Stretch (Make darks darker, lights lighter)
-        // If it's kinda light (>100), make it white (255). Else black (0).
-        // BUT: Since PoGo text is often white, we might want to INVERT it.
-        // Let's try Inversion: White Text becomes Black (0), Dark BG becomes White (255)
         
-        // Invert logic: 255 - gray
-        gray = 255 - gray;
-
-        // Apply "Binarization" (forcing Black or White) to clean edges
-        // Adjust this '150' number if text is disappearing or too thick
-        gray = (gray > 150) ? 255 : 0; 
-
+        // Standard Grayscale Formula
+        // We do NOT threshold (no if/else). We just strip the color.
+        const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+        
         data[i] = gray;     // R
         data[i + 1] = gray; // G
         data[i + 2] = gray; // B
+        // Alpha (transparency) remains unchanged
     }
     ctx.putImageData(imgData, 0, 0);
 }
@@ -89,24 +79,21 @@ function preprocessImage(cvs) {
 function parseData(data) {
     const fullText = data.text;
     const lines = data.lines;
-    
-    // Debugging: Print exactly what it saw to the console
-    console.log("--- OCR SCAN RESULTS ---");
-    console.log(fullText);
-    console.log("------------------------");
 
-    // 1. Robust CP Regex
-    // Looks for C, G, O, 0 followed by P, R, B (Common misreads)
-    // Matches: "CP 2500", "CR 2500", "GP 2500", "0P 2500"
-    const cpRegex = /[CG0O][PRB]\s*([0-9]+)/i;
+    console.log("--- RAW TEXT ---");
+    console.log(fullText); // Check the console to see what it found!
+
+    // 1. Find CP (Robust Regex)
+    // Matches "CP", "CR", "GP", "0P" followed by numbers
+    const cpRegex = /[CGO0][PRB]\s*([0-9]+)/i;
     const cpMatch = fullText.match(cpRegex);
     
     let cpLineIndex = -1;
 
     if (cpMatch) {
-        fieldCP.value = cpMatch[1]; 
+        fieldCP.value = cpMatch[1];
         
-        // Find the line index
+        // Find which line index contains the CP
         for (let i = 0; i < lines.length; i++) {
             if (lines[i].text.includes(cpMatch[0])) {
                 cpLineIndex = i;
@@ -115,17 +102,25 @@ function parseData(data) {
         }
     }
 
-    // 2. Name Guessing
-    if (cpLineIndex !== -1 && cpLineIndex + 1 < lines.length) {
-        let nameCandidate = lines[cpLineIndex + 1].text.trim();
-        
-        // Cleaning
-        nameCandidate = nameCandidate.replace(/[^a-zA-Z\s]/g, ''); // Remove weird symbols
-        if (nameCandidate.length > 2) {
-             fieldName.value = nameCandidate;
+    // 2. Find Name
+    // Logic: If we found CP, the name is likely the next non-empty line.
+    if (cpLineIndex !== -1) {
+        // Look ahead up to 3 lines (sometimes HP or a level arc separates them)
+        for(let i = 1; i <= 3; i++) {
+            if (lines[cpLineIndex + i]) {
+                let candidate = lines[cpLineIndex + i].text.trim();
+
+                // Name Filter:
+                // - Must be letters
+                // - Must not be "HP" or a date/time
+                // - Must be longer than 2 characters
+                if (candidate.length > 2 && !candidate.includes('/') && !candidate.includes(':')) {
+                    // Clean up trailing punctuation often read by OCR
+                    candidate = candidate.replace(/[.,\-_]+$/, '');
+                    fieldName.value = candidate;
+                    break; // Stop once we find a good candidate
+                }
+            }
         }
-    } else {
-        // Fallback: If we didn't find CP, maybe the name is just the biggest text line?
-        // (Skipping for now to keep it simple)
     }
 }
