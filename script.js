@@ -113,24 +113,22 @@ function parseData(data) {
     let cpLineIndex = -1;
 
     // === STEP 1: FIND CP ===
-    
-    // GREEDY REGEX: 
-    // 1. Prefix: CP, CR, GP, etc (or [ / ( )
-    // 2. Junk: [^0-9\n]{0,5} -> Ignore up to 5 non-number chars (but stop at newline)
-    // 3. Number Blob: ([0-9lIioOdS\/\-\s]{2,10}) -> Capture digits, letters, slashes AND SPACES
+    // Greedy Regex to capture messy CP lines
     const strictRegex = /(?:CP|CR|CA|GP|0P|LP|P|\[|\()[^0-9\n]{0,5}([0-9lIioOdS\/\-\s]{2,10})/i;
     
-    for (let i = 1; i < lines.length; i++) {
+    // FIX 1: Start loop at i = 0 (Don't skip the first line!)
+    for (let i = 0; i < lines.length; i++) {
         const lineText = lines[i].text.trim();
         if (lineText.length < 3) continue;
 
+        // Extra Safety: Ignore lines that look like Time (e.g. 11:00)
+        if (/^[0-9]{1,2}:[0-9]{2}/.test(lineText)) continue;
+
         const match = lineText.match(strictRegex);
         if (match) {
-            // Clean the blob
             const cleanNumber = cleanOCRNumbers(match[1]);
             const val = parseInt(cleanNumber);
             
-            // CP Range: 10 - 6500
             if (val > 10 && val < 6500) {
                 foundCP = cleanNumber;
                 cpLineIndex = i;
@@ -139,13 +137,18 @@ function parseData(data) {
         }
     }
 
-    // Fallback: Big Number Search
+    // Strategy B: Fallback (Big Number Search)
     if (!foundCP) {
         console.log("⚠️ No CP prefix found. Trying fallback...");
         let maxVal = 0;
-        for (let i = 1; i < Math.min(lines.length, 6); i++) {
+        
+        // FIX 2: Start loop at i = 0 here too
+        for (let i = 0; i < Math.min(lines.length, 6); i++) {
             const lineText = lines[i].text;
-            // Capture groups of digits/letters allowing for spaces in between
+            
+            // Ignore Time lines here too
+            if (/^[0-9]{1,2}:[0-9]{2}/.test(lineText)) continue;
+
             const numbers = lineText.match(/[0-9lI|/SdB]{2,}(\s+[0-9lI|/SdB]{2,})*/g); 
             
             if (numbers) {
@@ -163,7 +166,7 @@ function parseData(data) {
     }
 
     if (foundCP) fieldCP.value = foundCP;
-    else fieldCP.value = "Error"; // If this stays Error, check console!
+    else fieldCP.value = "Error"; 
 
     // === STEP 2: FIND HP (Bottom Anchor) ===
     let hpLineIndex = -1;
@@ -179,23 +182,25 @@ function parseData(data) {
     }
 
     // === STEP 3: FIND NAME ===
-    // "Banned Words" that appear on screen but ARE NOT names
-    const bannedWords = ["WEIGHT", "HEIGHT", "HEAVIEST", "LIGHTEST", "SHORTEST", "TALLEST", "CANDY", "STARDUST", "HP", "CP", "LUCKY", "SHADOW", "PURIFIED", "POKEMON", "MEGA"];
+    // FIX 3: Expanded Banned Words List to fix the Garchomp error
+    const bannedWords = ["WEIGHT", "HEIGHT", "HEAVIEST", "LIGHTEST", "SHORTEST", "TALLEST", "CANDY", "STARDUST", "HP", "CP", "LUCKY", "SHADOW", "PURIFIED", "POKEMON", "MEGA", "YMS", "RAIDS"];
 
     if (hpLineIndex !== -1) {
         // Scan UP from HP
-        for (let i = hpLineIndex - 1; i > cpLineIndex; i--) {
+        for (let i = hpLineIndex - 1; i >= 0; i--) { // Allow going to 0
             if (!lines[i]) continue;
             let line = lines[i].text.trim();
             
-            // 1. Is it a Banned Word?
+            // Filter Banned Words (Fixes "HEAVIEST DRAGON...")
             const isBanned = bannedWords.some(word => line.toUpperCase().includes(word));
             if (isBanned) continue;
 
-            // 2. Is it just numbers? (Like "2024")
+            // Filter pure numbers (e.g. "2024")
             if (/^[0-9\s\-\.]+$/.test(line)) continue;
+            
+            // Filter short junk (e.g. "kg", "m")
+            if (line.length < 3) continue;
 
-            // 3. Clean and Validate
             let cleanName = line.replace(/[^a-zA-Z\s\-\.']/g, '').trim();
             if (cleanName.length > 2) {
                 fieldName.value = cleanName;
@@ -204,7 +209,7 @@ function parseData(data) {
         }
     } 
     
-    // Fallback: Scan DOWN from CP if HP search failed
+    // Fallback: Scan DOWN from CP
     if (fieldName.value === "" && cpLineIndex !== -1) {
          for (let i = cpLineIndex + 1; i < cpLineIndex + 5; i++) {
             if (!lines[i]) break;
