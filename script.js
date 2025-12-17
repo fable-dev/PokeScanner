@@ -86,11 +86,11 @@ function parseData(data) {
     const fullText = data.text;
     const lines = data.lines;
 
-    console.log("Raw Text Found:", fullText); // Check console to see what it read!
+    console.log("Raw Text Found:", fullText); 
 
-    // 1. Find CP
-    // Look for "CP" followed by a space and then numbers.
-    const cpRegex = /CP\s*([0-9]+)/i;
+    // 1. Find CP (Updated to catch "CR" errors)
+    // Pattern: "C" followed by P or R, optional space, then numbers
+    const cpRegex = /C[PR]\s*([0-9]+)/i; 
     const cpMatch = fullText.match(cpRegex);
     
     let cpLineIndex = -1;
@@ -98,8 +98,9 @@ function parseData(data) {
     if (cpMatch) {
         fieldCP.value = cpMatch[1]; // The number part (e.g., "2500")
 
-        // Find which line the CP is on so we can guess the name location
+        // Find which line the CP is on
         for (let i = 0; i < lines.length; i++) {
+            // We search for the FULL match string (e.g., "CP 2500" or "CR 2500")
             if (lines[i].text.includes(cpMatch[0])) {
                 cpLineIndex = i;
                 break;
@@ -108,15 +109,13 @@ function parseData(data) {
     }
 
     // 2. Find Name (Guessing Logic)
-    // The name is almost always on the line *directly below* the CP.
+    // The name is usually the line directly below the CP line.
     if (cpLineIndex !== -1 && cpLineIndex + 1 < lines.length) {
-        // Get the text from the next line
         let nameCandidate = lines[cpLineIndex + 1].text.trim();
         
-        // Basic validation: A name should have letters and be more than 2 chars.
-        // This prevents grabbing part of the HP bar or other symbols.
+        // Validation: Must be > 2 chars and contain at least one letter
         if (nameCandidate.length > 2 && /[a-zA-Z]/.test(nameCandidate)) {
-             // Clean up common OCR mistakes at the end of names
+             // Clean up trailing symbols often left by OCR
              nameCandidate = nameCandidate.replace(/['`,\.\-_]+$/, '');
              fieldName.value = nameCandidate;
         }
