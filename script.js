@@ -88,15 +88,14 @@ function applySmartContrast(cvs) {
 
 // === THE NEW BRAIN: OCR CLEANER ===
 function cleanOCRNumbers(str) {
-    // This maps common OCR letter-mistakes to numbers
     return str
         .replace(/[lI|/!]/g, '1') // l, I, pipe, slash -> 1
         .replace(/[O]/g, '0')     // Capital O -> 0
         .replace(/[S]/g, '5')     // S -> 5
         .replace(/[Z]/g, '2')     // Z -> 2
-        .replace(/[d]/g, '4')     // d -> 4 (Fixes 'cpd' error)
+        .replace(/[d]/g, '4')     // d -> 4
         .replace(/[B]/g, '8')     // B -> 8
-        .replace(/[^0-9]/g, '');  // Finally, remove anything that isn't a number
+        .replace(/[^0-9]/g, '');  // Remove non-numbers
 }
 
 function parseData(data) {
@@ -109,49 +108,57 @@ function parseData(data) {
     let foundCP = null;
     let cpLineIndex = -1;
 
-    // STRATEGY A: Look for "CP" Prefix
-    // Regex explanation:
-    // 1. (CP|CR|CA|G|0P|LP|P) -> Matches CP, CR, CA, GP, 0P, LP, or just P
-    // 2. .{0,4} -> Matches up to 4 junk characters (spaces, symbols, 'd')
-    // 3. ([0-9lIioOdS\/\-]{2,6}) -> Matches the number part (including typos like l, /, d)
-    const strictRegex = /(?:CP|CR|CA|G|0P|LP|P).{0,4}([0-9lIioOdS\/\-]{2,6})/i;
+    // STRATEGY A: Strict "CP" Prefix Search
+    // We REMOVED single 'G' and 'P' to avoid matching "5G" or "PM"
+    // Matches: CP, CR, CA, GP, 0P, LP
+    const strictRegex = /(?:CP|CR|CA|GP|0P|LP).{0,4}([0-9lIioOdS\/\-]{2,6})/i;
     
-    // Loop through lines to find the best match
-    for (let i = 0; i < lines.length; i++) {
+    // IMPORTANT: Start loop at i = 1 (Skip line 0, which is the phone status bar)
+    // This prevents reading the clock or battery %
+    for (let i = 1; i < lines.length; i++) {
         const lineText = lines[i].text.trim();
+        
+        // Skip lines that are too short to be a CP line
+        if (lineText.length < 3) continue;
+
         const match = lineText.match(strictRegex);
 
         if (match) {
-            // We found a line that looks like CP!
-            const rawNumber = match[1];
-            const cleanNumber = cleanOCRNumbers(rawNumber);
+            const cleanNumber = cleanOCRNumbers(match[1]);
             
-            // Sanity check: CP is usually between 10 and 6000
-            if (cleanNumber.length >= 2 && parseInt(cleanNumber) < 7000) {
+            // Sanity Check: CP must be reasonable (10 - 6000)
+            const val = parseInt(cleanNumber);
+            if (val > 10 && val < 6500) {
                 foundCP = cleanNumber;
                 cpLineIndex = i;
-                break; // Stop looking, we found it.
+                break; // We found a high-confidence match!
             }
         }
     }
 
-    // STRATEGY B: The "Fallback" (If regex failed)
-    // Sometimes the 'CP' is totally gone (like your "~ 4549" example).
-    // We look for the LARGEST 3-or-4 digit number in the first 5 lines.
+    // STRATEGY B: The Fallback (Big Number Search)
+    // If Strategy A failed, look for the BIGGEST number in the top section
     if (!foundCP) {
-        console.log("⚠️ No CP prefix found. Trying fallback strategy...");
-        for (let i = 0; i < Math.min(lines.length, 6); i++) {
+        console.log("⚠️ No CP prefix found. Trying fallback...");
+        let maxVal = 0;
+
+        // Only scan lines 1 through 5 (Skip line 0 status bar)
+        for (let i = 1; i < Math.min(lines.length, 6); i++) {
             const lineText = lines[i].text;
-            // Extract all potential number-blobs
+            
+            // Find anything that looks like a number group of 3-4 digits
+            // We specifically look for 3 or 4 digits to avoid HP (e.g. 15) or Level (e.g. 50)
             const numbers = lineText.match(/[0-9lI|/SdB]{3,4}/g); 
             
             if (numbers) {
                 numbers.forEach(num => {
                     const clean = cleanOCRNumbers(num);
                     const val = parseInt(clean);
-                    // Heuristic: CP is likely > 100 and < 6000
-                    // Also, we ignore numbers that look like time (e.g. 1100, 1200) if they are on line 0
-                    if (val > 100 && val < 6000 && i > 0) {
+
+                    // Logic: We want the highest number that isn't absurdly large (Stardust)
+                    // Stardust is usually > 10,000, so we cap at 6500.
+                    if (val > maxVal && val < 6500) {
+                        maxVal = val;
                         foundCP = clean;
                         cpLineIndex = i;
                     }
@@ -168,18 +175,29 @@ function parseData(data) {
     }
 
     // FIND THE NAME
-    // Logic: Name is usually the line AFTER the CP.
-    if (cpLineIndex !== -1 && lines[cpLineIndex + 1]) {
-        // Try line +1
-        let nameCandidate = lines[cpLineIndex + 1].text.trim();
-        
-        // If line +1 is empty or tiny, try line +2
-        if (nameCandidate.length < 3 && lines[cpLineIndex + 2]) {
-            nameCandidate = lines[cpLineIndex + 2].text.trim();
+    // Logic: Look 1 or 2 lines after the CP
+    if (cpLineIndex !== -1) {
+        // We iterate through the next 2 lines to find a valid name
+        for(let offset = 1; offset <= 2; offset++) {
+            const targetLine = lines[cpLineIndex + offset];
+            if (targetLine) {
+                let candidate = targetLine.text.trim();
+                
+                // Name filters:
+                // 1. Must have letters
+                // 2. No numbers (prevents grabbing HP like "174/174")
+                // 3. No "/" or ":"
+                if (candidate.length > 2 && 
+                    /[a-zA-Z]/.test(candidate) && 
+                    !/[0-9]/.test(candidate) &&
+                    !candidate.includes('/')
+                ) {
+                    // Clean up trailing symbols
+                    candidate = candidate.replace(/[^a-zA-Z\s\-]/g, '');
+                    fieldName.value = candidate;
+                    break;
+                }
+            }
         }
-
-        // Clean name
-        nameCandidate = nameCandidate.replace(/[^a-zA-Z\s\-]/g, '');
-        fieldName.value = nameCandidate;
     }
 }
