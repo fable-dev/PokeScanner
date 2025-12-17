@@ -27,10 +27,10 @@ function handleUpload() {
         canvas.height = img.height * scale;
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-        // 2. APPLY THE "WHITE TEXT ISOLATOR"
+        // 2. ISOLATE TEXT (New Threshold Logic)
         isolateWhiteText(canvas);
 
-        status.innerText = "⏳ Scanning isolated text...";
+        status.innerText = "⏳ Scanning...";
         fieldName.value = '';
         fieldCP.value = '';
 
@@ -53,57 +53,50 @@ function handleUpload() {
     };
 }
 
-// === THE FIX: COLOR FILTER ===
+// === THE FIX: STRICTER COLOR FILTER ===
 function isolateWhiteText(cvs) {
     const imgData = ctx.getImageData(0, 0, cvs.width, cvs.height);
     const data = imgData.data;
 
-    // We look for pixels that are close to PURE WHITE.
-    // Pure white is R=255, G=255, B=255.
-    // Gold/Lucky background is R=255, G=215, B=0 (High R/G, but Zero Blue).
-    // Dragon background is Purple (High B, Low G).
-    
-    // Threshold: How bright must the pixel be?
-    const threshold = 160; 
+    // We raised the threshold from 160 to 210.
+    // This separates "Bright Text" (255) from "Light Backgrounds" (~200).
+    const threshold = 210; 
 
     for (let i = 0; i < data.length; i += 4) {
         const r = data[i];
         const g = data[i + 1];
         const b = data[i + 2];
 
-        // LOGIC: If R, G, AND B are ALL high, it's White Text.
+        // Check if pixel is SUPER bright (Text)
         if (r > threshold && g > threshold && b > threshold) {
-            // It's Text! Make it Black for the scanner.
-            data[i] = 0;     // R
-            data[i + 1] = 0; // G
-            data[i + 2] = 0; // B
+            // It is Text -> Make it PURE BLACK
+            data[i] = 0;     
+            data[i + 1] = 0; 
+            data[i + 2] = 0; 
         } else {
-            // It's Background (Color/Dark). Delete it (Make it White).
-            data[i] = 255;     // R
-            data[i + 1] = 255; // G
-            data[i + 2] = 255; // B
+            // It is Background (Beige, Gold, Blue) -> Make it PURE WHITE
+            data[i] = 255;   
+            data[i + 1] = 255; 
+            data[i + 2] = 255; 
         }
     }
     ctx.putImageData(imgData, 0, 0);
 }
 
-// === IMPROVED CLEANER ===
+// === OCR HELPERS ===
 function cleanOCRNumbers(str) {
-    // 1. The "Sandwich" Fix:
-    // If a slash (/) or pipe (|) is stuck between two digits (e.g. "3/7"), 
-    // it's almost certainly a scratch/sparkle, NOT a number 1.
-    // We remove it entirely.
+    // Sandwich Fix (3/7 -> 37)
     let cleaned = str.replace(/(\d)[\/\|\\](\d)/g, '$1$2');
 
-    // 2. Standard Fixes (remaining slashes become 1)
     return cleaned
-        .replace(/[lI|/!]/g, '1') // l, I, pipe, slash -> 1
-        .replace(/[O]/g, '0')     // Capital O -> 0
-        .replace(/[S]/g, '5')     // S -> 5
-        .replace(/[Z]/g, '2')     // Z -> 2
-        .replace(/[d]/g, '4')     // d -> 4
-        .replace(/[B]/g, '8')     // B -> 8
-        .replace(/[^0-9]/g, '');  // Remove non-numbers
+        .replace(/[lI|/!]/g, '1') 
+        .replace(/[O]/g, '0')     
+        .replace(/[S]/g, '5')     
+        .replace(/[Z]/g, '2')     
+        .replace(/[d]/g, '4')     
+        .replace(/[B]/g, '8')
+        .replace(/[?]/g, '7')     // New: Question mark sometimes replaces 7
+        .replace(/[^0-9]/g, '');  
 }
 
 function parseData(data) {
@@ -116,8 +109,9 @@ function parseData(data) {
     let foundCP = null;
     let cpLineIndex = -1;
 
-    // STRATEGY A: Strict Prefix Search
-    const strictRegex = /(?:CP|CR|CA|GP|0P|LP|P)[^0-9]{0,4}([0-9lIioOdS\/\-]{2,7})/i;
+    // STRATEGY A: Prefix Search
+    // Added \[ and \( to catch "C" misreads like "[ 4487"
+    const strictRegex = /(?:CP|CR|CA|GP|0P|LP|P|\[|\()[^0-9]{0,4}([0-9lIioOdS\/\-]{2,7})/i;
     
     for (let i = 1; i < lines.length; i++) {
         const lineText = lines[i].text.trim();
@@ -128,7 +122,6 @@ function parseData(data) {
             const cleanNumber = cleanOCRNumbers(match[1]);
             const val = parseInt(cleanNumber);
             
-            // CP range: 10 to 6500
             if (val > 10 && val < 6500) {
                 foundCP = cleanNumber;
                 cpLineIndex = i;
@@ -144,8 +137,6 @@ function parseData(data) {
 
         for (let i = 1; i < Math.min(lines.length, 6); i++) {
             const lineText = lines[i].text;
-            
-            // UPDATE: We now capture up to 6 chars (was 4) to catch messy strings like "3/748"
             const numbers = lineText.match(/[0-9lI|/SdB]{3,6}/g); 
             
             if (numbers) {
@@ -163,7 +154,6 @@ function parseData(data) {
         }
     }
 
-    // SET CP
     if (foundCP) fieldCP.value = foundCP;
     else fieldCP.value = "Error";
 
