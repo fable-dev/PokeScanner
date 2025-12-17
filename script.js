@@ -1,6 +1,5 @@
 const uploader = document.getElementById('uploader');
 const canvas = document.getElementById('processing-canvas');
-// Optimized for frequent reading
 const ctx = canvas.getContext('2d', { willReadFrequently: true });
 const status = document.getElementById('status');
 const previewImage = document.getElementById('preview-image');
@@ -19,21 +18,19 @@ function handleUpload() {
     img.src = URL.createObjectURL(file);
 
     img.onload = () => {
-        // Show original
         previewImage.src = img.src;
         previewImage.style.display = 'block';
 
-        // 1. UPSCALE TO 3X (Bigger is better for numbers)
+        // 1. UPSCALE (3x)
         const scale = 3; 
         canvas.width = img.width * scale;
         canvas.height = img.height * scale;
-        
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-        // 2. High Contrast Grayscale (No weird color filters)
-        applySmartContrast(canvas);
+        // 2. APPLY THE "WHITE TEXT ISOLATOR"
+        isolateWhiteText(canvas);
 
-        status.innerText = "⏳ Scanning...";
+        status.innerText = "⏳ Scanning isolated text...";
         fieldName.value = '';
         fieldCP.value = '';
 
@@ -56,46 +53,50 @@ function handleUpload() {
     };
 }
 
-function applySmartContrast(cvs) {
+// === THE FIX: COLOR FILTER ===
+function isolateWhiteText(cvs) {
     const imgData = ctx.getImageData(0, 0, cvs.width, cvs.height);
     const data = imgData.data;
+
+    // We look for pixels that are close to PURE WHITE.
+    // Pure white is R=255, G=255, B=255.
+    // Gold/Lucky background is R=255, G=215, B=0 (High R/G, but Zero Blue).
+    // Dragon background is Purple (High B, Low G).
     
-    // Simple Grayscale + Contrast Boost
-    // We want to make gray text darker and light backgrounds lighter
-    const contrast = 1.2; // Increase contrast by 20%
-    const intercept = 128 * (1 - contrast);
+    // Threshold: How bright must the pixel be?
+    const threshold = 160; 
 
     for (let i = 0; i < data.length; i += 4) {
         const r = data[i];
         const g = data[i + 1];
         const b = data[i + 2];
-        
-        // Standard Luminance (Human perception of brightness)
-        let gray = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-        
-        // Apply Contrast Curve
-        gray = (gray * contrast) + intercept;
-        
-        // Clamp values to 0-255
-        gray = Math.min(255, Math.max(0, gray));
 
-        data[i] = gray;     // R
-        data[i + 1] = gray; // G
-        data[i + 2] = gray; // B
+        // LOGIC: If R, G, AND B are ALL high, it's White Text.
+        if (r > threshold && g > threshold && b > threshold) {
+            // It's Text! Make it Black for the scanner.
+            data[i] = 0;     // R
+            data[i + 1] = 0; // G
+            data[i + 2] = 0; // B
+        } else {
+            // It's Background (Color/Dark). Delete it (Make it White).
+            data[i] = 255;     // R
+            data[i + 1] = 255; // G
+            data[i + 2] = 255; // B
+        }
     }
     ctx.putImageData(imgData, 0, 0);
 }
 
-// === THE NEW BRAIN: OCR CLEANER ===
+// === OCR HELPERS ===
 function cleanOCRNumbers(str) {
     return str
-        .replace(/[lI|/!]/g, '1') // l, I, pipe, slash -> 1
-        .replace(/[O]/g, '0')     // Capital O -> 0
-        .replace(/[S]/g, '5')     // S -> 5
-        .replace(/[Z]/g, '2')     // Z -> 2
-        .replace(/[d]/g, '4')     // d -> 4
-        .replace(/[B]/g, '8')     // B -> 8
-        .replace(/[^0-9]/g, '');  // Remove anything else
+        .replace(/[lI|/!]/g, '1') 
+        .replace(/[O]/g, '0')     
+        .replace(/[S]/g, '5')     
+        .replace(/[Z]/g, '2')     
+        .replace(/[d]/g, '4')     
+        .replace(/[B]/g, '8')     
+        .replace(/[^0-9]/g, '');  
 }
 
 function parseData(data) {
@@ -108,24 +109,17 @@ function parseData(data) {
     let foundCP = null;
     let cpLineIndex = -1;
 
-    // STRATEGY A: Strict "CP" Prefix Search
-    // FIX: Changed .{0,4} to [^0-9]{0,4}
-    // This prevents the scanner from "eating" the first digits of the CP
+    // STRATEGY A: Strict Prefix Search
     const strictRegex = /(?:CP|CR|CA|GP|0P|LP|P)[^0-9]{0,4}([0-9lIioOdS\/\-]{2,6})/i;
     
-    // Start at i=1 to skip the phone status bar
     for (let i = 1; i < lines.length; i++) {
         const lineText = lines[i].text.trim();
-        
         if (lineText.length < 3) continue;
 
         const match = lineText.match(strictRegex);
-
         if (match) {
             const cleanNumber = cleanOCRNumbers(match[1]);
             const val = parseInt(cleanNumber);
-            
-            // Range check (10 to 6500)
             if (val > 10 && val < 6500) {
                 foundCP = cleanNumber;
                 cpLineIndex = i;
@@ -134,22 +128,17 @@ function parseData(data) {
         }
     }
 
-    // STRATEGY B: The Fallback (Big Number Search)
+    // STRATEGY B: Fallback (Big Number Search)
     if (!foundCP) {
         console.log("⚠️ No CP prefix found. Trying fallback...");
         let maxVal = 0;
-
         for (let i = 1; i < Math.min(lines.length, 6); i++) {
             const lineText = lines[i].text;
-            
-            // Match groups of 3-4 digits
             const numbers = lineText.match(/[0-9lI|/SdB]{3,4}/g); 
-            
             if (numbers) {
                 numbers.forEach(num => {
                     const clean = cleanOCRNumbers(num);
                     const val = parseInt(clean);
-
                     if (val > maxVal && val < 6500) {
                         maxVal = val;
                         foundCP = clean;
@@ -160,27 +149,16 @@ function parseData(data) {
         }
     }
 
-    // SET THE CP
-    if (foundCP) {
-        fieldCP.value = foundCP;
-    } else {
-        fieldCP.value = "Error";
-    }
+    if (foundCP) fieldCP.value = foundCP;
+    else fieldCP.value = "Error";
 
-    // FIND THE NAME
-    // Logic: Name is strictly 1 or 2 lines BELOW the CP line.
+    // Name Logic
     if (cpLineIndex !== -1) {
         for(let offset = 1; offset <= 2; offset++) {
             const targetLine = lines[cpLineIndex + offset];
             if (targetLine) {
                 let candidate = targetLine.text.trim();
-                
-                // Name must have letters, no numbers, no slashes
-                if (candidate.length > 2 && 
-                    /[a-zA-Z]/.test(candidate) && 
-                    !/[0-9]/.test(candidate) &&
-                    !candidate.includes('/')
-                ) {
+                if (candidate.length > 2 && /[a-zA-Z]/.test(candidate) && !/[0-9]/.test(candidate) && !candidate.includes('/')) {
                     candidate = candidate.replace(/[^a-zA-Z\s\-]/g, '');
                     fieldName.value = candidate;
                     break;
