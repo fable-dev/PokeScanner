@@ -1,6 +1,6 @@
 const uploader = document.getElementById('uploader');
 const canvas = document.getElementById('processing-canvas');
-// Fix for the console warning: optimized for frequent reading
+// Optimized for frequent reading
 const ctx = canvas.getContext('2d', { willReadFrequently: true });
 const status = document.getElementById('status');
 const previewImage = document.getElementById('preview-image');
@@ -19,22 +19,21 @@ function handleUpload() {
     img.src = URL.createObjectURL(file);
 
     img.onload = () => {
-        // Show original image
+        // Show original
         previewImage.src = img.src;
         previewImage.style.display = 'block';
 
-        // 1. UPSCALING (2x Zoom)
-        // Making the text bigger helps Tesseract separate the numbers
-        const scaleFactor = 2;
-        canvas.width = img.width * scaleFactor;
-        canvas.height = img.height * scaleFactor;
+        // 1. UPSCALE TO 3X (Bigger is better for numbers)
+        const scale = 3; 
+        canvas.width = img.width * scale;
+        canvas.height = img.height * scale;
         
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-        // 2. IMAGE FILTERING (The Blue Channel Trick)
-        processImageForOCR(canvas);
+        // 2. High Contrast Grayscale (No weird color filters)
+        applySmartContrast(canvas);
 
-        status.innerText = "⏳ Scanning optimized image...";
+        status.innerText = "⏳ Scanning...";
         fieldName.value = '';
         fieldCP.value = '';
 
@@ -57,39 +56,47 @@ function handleUpload() {
     };
 }
 
-function processImageForOCR(cvs) {
+function applySmartContrast(cvs) {
     const imgData = ctx.getImageData(0, 0, cvs.width, cvs.height);
     const data = imgData.data;
+    
+    // Simple Grayscale + Contrast Boost
+    // We want to make gray text darker and light backgrounds lighter
+    const contrast = 1.2; // Increase contrast by 20%
+    const intercept = 128 * (1 - contrast);
 
     for (let i = 0; i < data.length; i += 4) {
         const r = data[i];
         const g = data[i + 1];
         const b = data[i + 2];
-
-        // --- THE MAGIC FORMULA ---
-        // instead of standard grayscale, we prioritize the BLUE channel.
-        // This kills the Gold/Yellow/Orange backgrounds (which have low blue)
-        // while keeping White text (which has high blue).
         
-        // We use 0.5 * Blue + 0.5 * Grayscale to balance it for Blue/Water types too.
-        const grayScale = 0.299 * r + 0.587 * g + 0.114 * b;
-        let finalVal = (b * 0.6) + (grayScale * 0.4);
+        // Standard Luminance (Human perception of brightness)
+        let gray = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        
+        // Apply Contrast Curve
+        gray = (gray * contrast) + intercept;
+        
+        // Clamp values to 0-255
+        gray = Math.min(255, Math.max(0, gray));
 
-        // INVERT: Tesseract loves Black Text on White Background.
-        // Since PoGo is White Text on Dark/Color, we invert it.
-        finalVal = 255 - finalVal;
-
-        // CONTRAST BOOST:
-        // Push dark grays to black, light grays to white.
-        // This removes "fuzzy" pixels.
-        if (finalVal < 100) finalVal = 0;   // Make text PURE BLACK
-        else if (finalVal > 180) finalVal = 255; // Make bg PURE WHITE
-
-        data[i] = finalVal;     // R
-        data[i + 1] = finalVal; // G
-        data[i + 2] = finalVal; // B
+        data[i] = gray;     // R
+        data[i + 1] = gray; // G
+        data[i + 2] = gray; // B
     }
     ctx.putImageData(imgData, 0, 0);
+}
+
+// === THE NEW BRAIN: OCR CLEANER ===
+function cleanOCRNumbers(str) {
+    // This maps common OCR letter-mistakes to numbers
+    return str
+        .replace(/[lI|/!]/g, '1') // l, I, pipe, slash -> 1
+        .replace(/[O]/g, '0')     // Capital O -> 0
+        .replace(/[S]/g, '5')     // S -> 5
+        .replace(/[Z]/g, '2')     // Z -> 2
+        .replace(/[d]/g, '4')     // d -> 4 (Fixes 'cpd' error)
+        .replace(/[B]/g, '8')     // B -> 8
+        .replace(/[^0-9]/g, '');  // Finally, remove anything that isn't a number
 }
 
 function parseData(data) {
@@ -99,45 +106,80 @@ function parseData(data) {
     console.log("--- RAW TEXT ---");
     console.log(fullText);
 
-    // 1. Find CP (Updated Regex)
-    // We look for 'CP' or 'CR' or just a standalone large number at the start
-    // We've loosened the regex to catch "CP<garbage>2500"
-    const cpRegex = /(CP|CR|G|0P)\s*[\D]{0,3}\s*([0-9]{3,4})/i;
-    const cpMatch = fullText.match(cpRegex);
-    
+    let foundCP = null;
     let cpLineIndex = -1;
 
-    if (cpMatch) {
-        // We use the LAST group (numbers)
-        fieldCP.value = cpMatch[2]; 
-        
-        // Find line index
-        for (let i = 0; i < lines.length; i++) {
-            if (lines[i].text.includes(cpMatch[0])) {
+    // STRATEGY A: Look for "CP" Prefix
+    // Regex explanation:
+    // 1. (CP|CR|CA|G|0P|LP|P) -> Matches CP, CR, CA, GP, 0P, LP, or just P
+    // 2. .{0,4} -> Matches up to 4 junk characters (spaces, symbols, 'd')
+    // 3. ([0-9lIioOdS\/\-]{2,6}) -> Matches the number part (including typos like l, /, d)
+    const strictRegex = /(?:CP|CR|CA|G|0P|LP|P).{0,4}([0-9lIioOdS\/\-]{2,6})/i;
+    
+    // Loop through lines to find the best match
+    for (let i = 0; i < lines.length; i++) {
+        const lineText = lines[i].text.trim();
+        const match = lineText.match(strictRegex);
+
+        if (match) {
+            // We found a line that looks like CP!
+            const rawNumber = match[1];
+            const cleanNumber = cleanOCRNumbers(rawNumber);
+            
+            // Sanity check: CP is usually between 10 and 6000
+            if (cleanNumber.length >= 2 && parseInt(cleanNumber) < 7000) {
+                foundCP = cleanNumber;
                 cpLineIndex = i;
-                break;
+                break; // Stop looking, we found it.
             }
         }
     }
 
-    // 2. Find Name
-    if (cpLineIndex !== -1) {
-        // Look at next 3 lines
-        for(let i = 1; i <= 3; i++) {
-            if (lines[cpLineIndex + i]) {
-                let candidate = lines[cpLineIndex + i].text.trim();
-                
-                // If it's a valid looking name
-                if (candidate.length > 2 && 
-                    !candidate.includes('/') && 
-                    !candidate.includes('HP')) {
-                    
-                    // Clean symbols
-                    candidate = candidate.replace(/[^a-zA-Z\s\-]/g, '');
-                    fieldName.value = candidate;
-                    break;
-                }
+    // STRATEGY B: The "Fallback" (If regex failed)
+    // Sometimes the 'CP' is totally gone (like your "~ 4549" example).
+    // We look for the LARGEST 3-or-4 digit number in the first 5 lines.
+    if (!foundCP) {
+        console.log("⚠️ No CP prefix found. Trying fallback strategy...");
+        for (let i = 0; i < Math.min(lines.length, 6); i++) {
+            const lineText = lines[i].text;
+            // Extract all potential number-blobs
+            const numbers = lineText.match(/[0-9lI|/SdB]{3,4}/g); 
+            
+            if (numbers) {
+                numbers.forEach(num => {
+                    const clean = cleanOCRNumbers(num);
+                    const val = parseInt(clean);
+                    // Heuristic: CP is likely > 100 and < 6000
+                    // Also, we ignore numbers that look like time (e.g. 1100, 1200) if they are on line 0
+                    if (val > 100 && val < 6000 && i > 0) {
+                        foundCP = clean;
+                        cpLineIndex = i;
+                    }
+                });
             }
         }
+    }
+
+    // SET THE CP
+    if (foundCP) {
+        fieldCP.value = foundCP;
+    } else {
+        fieldCP.value = "Error";
+    }
+
+    // FIND THE NAME
+    // Logic: Name is usually the line AFTER the CP.
+    if (cpLineIndex !== -1 && lines[cpLineIndex + 1]) {
+        // Try line +1
+        let nameCandidate = lines[cpLineIndex + 1].text.trim();
+        
+        // If line +1 is empty or tiny, try line +2
+        if (nameCandidate.length < 3 && lines[cpLineIndex + 2]) {
+            nameCandidate = lines[cpLineIndex + 2].text.trim();
+        }
+
+        // Clean name
+        nameCandidate = nameCandidate.replace(/[^a-zA-Z\s\-]/g, '');
+        fieldName.value = nameCandidate;
     }
 }
