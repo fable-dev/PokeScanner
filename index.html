@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PokeScanner</title>
+    <script src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js'></script>
+    
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: 20px auto; padding: 0 20px; text-align: center; }
+        #preview-image { max-width: 100%; border-radius: 10px; margin-top: 20px; display: none; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .btn-upload { background-color: #4CAF50; color: white; padding: 12px 24px; border-radius: 5px; cursor: pointer; display: inline-block; margin-bottom: 20px; }
+        input[type="file"] { display: none; } /* Hide the default ugly file input */
+        #status { margin-top: 20px; font-weight: bold; color: #555; }
+        #result-box { background: #f4f4f4; padding: 15px; border-radius: 8px; text-align: left; margin-top: 20px; white-space: pre-wrap; font-family: monospace; border: 1px solid #ddd; }
+    </style>
+</head>
+<body>
+
+    <h1>🔍 PoGo Screenshot Scanner</h1>
+    <p>Upload a screenshot to read the text.</p>
+
+    <label for="uploader" class="btn-upload">Choose Screenshot</label>
+    <input type="file" id="uploader" accept="image/*">
+
+    <div id="status">Waiting for image...</div>
+    
+    <img id="preview-image" alt="Screenshot Preview" />
+
+    <div id="result-box">Results will appear here...</div>
+
+    <script>
+        const uploader = document.getElementById('uploader');
+        const preview = document.getElementById('preview-image');
+        const status = document.getElementById('status');
+        const resultBox = document.getElementById('result-box');
+
+        // 3. Listen for file upload
+        uploader.addEventListener('change', () => {
+            const file = uploader.files[0];
+            if (!file) return;
+
+            // Show the image
+            const reader = new FileReader();
+            reader.onload = () => {
+                preview.src = reader.result;
+                preview.style.display = 'block';
+            };
+            reader.readAsDataURL(file);
+
+            // Start Recognition
+            status.innerText = "⏳ Scanning image... (This may take a moment)";
+            resultBox.innerText = "";
+
+            Tesseract.recognize(
+                file,
+                'eng', // Language set to English
+                {
+                    logger: m => {
+                        // Optional: Update status with progress %
+                        if(m.status === 'recognizing text') {
+                            status.innerText = `⏳ Scanning... ${Math.round(m.progress * 100)}%`;
+                        }
+                    }
+                }
+            ).then(({ data: { text } }) => {
+                // 4. Success! Display the text
+                status.innerText = "✅ Scan Complete!";
+                resultBox.innerText = text;
+                
+                console.log(text); // View full result in Console
+            }).catch(err => {
+                status.innerText = "❌ Error: " + err.message;
+            });
+        });
+    </script>
+</body>
+</html>
